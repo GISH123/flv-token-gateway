@@ -22,10 +22,15 @@ def make_settings(**overrides):
     return Settings(**data)
 
 
+class MockAsyncStream(httpx.AsyncByteStream):
+    async def __aiter__(self):
+        yield MOCK_FLV
+
+
 def upstream_handler(request: httpx.Request) -> httpx.Response:
     if request.url.path == "/dev/liveB03.flv":
-        return httpx.Response(200, content=MOCK_FLV, headers={"content-type": "video/x-flv"})
-    return httpx.Response(404)
+        return httpx.Response(200, stream=MockAsyncStream(), headers={"content-type": "video/x-flv"})
+    return httpx.Response(404, stream=MockAsyncStream())
 
 
 @pytest.mark.asyncio
