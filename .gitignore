@@ -30,3 +30,6 @@ requirements_before_packaging.txt
 .DS_Store
 .idea/
 .vscode/
+
+# Git transfer bundles
+*.bundle

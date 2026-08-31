@@ -1,9 +1,9 @@
-# FLVTokenGateway_v03_release.spec
+# FLVTokenGateway_v04_sslfix.spec
 # ------------------------------------------------------------
 # Release-oriented one-command build for FLV Token Gateway.
 #
 # Run from repository root:
-#   python -m PyInstaller --clean --noconfirm FLVTokenGateway_v03_release.spec
+#   python -m PyInstaller --clean --noconfirm FLVTokenGateway_v04_sslfix.spec
 #
 # Final layout:
 #   dist/FLVTokenGateway/
@@ -27,9 +27,11 @@
 from pathlib import Path
 import shutil
 import textwrap
+import sys
+import _ssl
 
 project_root = Path.cwd().resolve()
-generated_dir = project_root / "build" / "_flv_gateway_v03_generated"
+generated_dir = project_root / "build" / "_flv_gateway_v04_generated"
 generated_dir.mkdir(parents=True, exist_ok=True)
 
 # ------------------------------------------------------------
@@ -314,7 +316,86 @@ else:
 # ------------------------------------------------------------
 datas = []
 
+# ------------------------------------------------------------
+# 4a. Explicitly collect OpenSSL DLLs required by Python's _ssl/_hashlib.
+#
+# Some Windows Python/venv layouts do not let PyInstaller discover these
+# dependent DLLs automatically. The EXE can therefore build successfully but
+# fail at runtime with:
+#   ImportError: DLL load failed while importing _ssl
+#
+# Search the base Python installation / venv / _ssl location and add matching
+# libssl/libcrypto DLLs as binary dependencies.
+# ------------------------------------------------------------
+binaries = []
+
+openssl_patterns = (
+    "libssl*.dll",
+    "libcrypto*.dll",
+)
+
+search_roots = []
+for candidate in (
+    Path(sys.base_prefix),
+    Path(sys.prefix),
+    Path(sys.executable).resolve().parent,
+    Path(_ssl.__file__).resolve().parent,
+):
+    try:
+        candidate = candidate.resolve()
+    except Exception:
+        pass
+    if candidate.exists() and candidate not in search_roots:
+        search_roots.append(candidate)
+
+found_openssl = {}
+
+for root in search_roots:
+    # Common official-CPython / Conda locations first.
+    candidate_dirs = [
+        root,
+        root / "DLLs",
+        root / "Library" / "bin",
+    ]
+
+    for directory in candidate_dirs:
+        if not directory.exists():
+            continue
+        for pattern in openssl_patterns:
+            for dll in directory.glob(pattern):
+                if dll.is_file():
+                    found_openssl[dll.name.lower()] = dll.resolve()
+
+    # Small recursive fallback for unusual Python layouts.
+    # Skip site-packages where possible to avoid unrelated vendor DLL copies.
+    for pattern in openssl_patterns:
+        try:
+            for dll in root.rglob(pattern):
+                if not dll.is_file():
+                    continue
+                lower_parts = {part.lower() for part in dll.parts}
+                if "site-packages" in lower_parts:
+                    continue
+                found_openssl.setdefault(dll.name.lower(), dll.resolve())
+        except (OSError, PermissionError):
+            pass
+
+for dll in sorted(found_openssl.values(), key=lambda p: p.name.lower()):
+    binaries.append((str(dll), "."))
+    print(f"[SPEC][SSL] include: {dll}")
+
+if not any(name.startswith("libssl") for name in found_openssl):
+    print("[SPEC][SSL] WARNING: no libssl*.dll found.")
+if not any(name.startswith("libcrypto") for name in found_openssl):
+    print("[SPEC][SSL] WARNING: no libcrypto*.dll found.")
+
+print(f"[SPEC][SSL] Python executable: {sys.executable}")
+print(f"[SPEC][SSL] sys.base_prefix : {sys.base_prefix}")
+print(f"[SPEC][SSL] _ssl module     : {_ssl.__file__}")
+
 hiddenimports = [
+    "_ssl",
+    "_hashlib",
     "app.main",
     "app.settings",
     "app.token_service",
@@ -341,7 +422,7 @@ hiddenimports = [
 a = Analysis(
     [str(entry_path)],
     pathex=[str(project_root)],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
