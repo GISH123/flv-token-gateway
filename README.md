@@ -1,161 +1,149 @@
 # FLV Token Gateway
 
-將內網／源站 FLV 拉流地址包在一層 **5 分鐘 HMAC token 驗證** 後，再對外提供拉流。
+短效 Token 鑑權拉流 POC。此服務放在 Client/VLC 與內網 SRS / HTTP-FLV Source 之間，讓 Client 不直接使用原始 FLV URL，而是先申請短效 token，再透過 Gateway URL 拉流。
 
-需求對應：
+## Features
 
-- 源站：`https://10.2.192.8:8088/dev/liveB03.flv`
-- Client 不能直接碰源站，只碰 Gateway。
-- 每次先呼叫 Token API 取得 token。
-- token 預設有效 **300 秒（5 分鐘）**。
-- 拉 `.flv` 時沒有 token → `401`。
-- token 無效、被竄改、過期、或拿 B03 的 token 拉 B04 → `403`。
-- token 只在「建立拉流連線」時驗證。連線建立成功後，不會在第 300 秒硬切斷正在播放的 stream；下一次 reconnect 時必須重新取得有效 token。
+- FastAPI based token gateway
+- HMAC-SHA256 signed token
+- token binds exact stream path, expiry, and nonce
+- tokenized HTTP-FLV pull stream
+- reverse proxy streaming response; does not preload entire FLV into memory
+- optional token issuer API key
+- pytest coverage for token and gateway behavior
 
 ## Architecture
 
 ```text
-Client
-  |  POST /api/v1/tokens {stream_path}
-  v
-FLV Token Gateway :8088
-  |  returns /dev/liveB03.flv?token=...
-  |
-  |  GET .flv?token=...  (verify HMAC + path + expiry)
-  v
-Source / Upstream :9090 in localhost demo
-  or https://10.2.192.8:8088 in intranet
+Client / VLC
+    |
+    | POST /api/v1/tokens {stream_path}
+    v
+FLV Token Gateway
+    |
+    | GET upstream FLV
+    v
+SRS / FLV Source
 ```
 
-## 1. Localhost demo (Windows)
-
-最簡單：
-
-```bat
-run_local_demo.bat
-```
-
-它會啟動：
-
-- Mock source: `http://127.0.0.1:9090`
-- Gateway: `http://127.0.0.1:8088`
-- Swagger: `http://127.0.0.1:8088/docs`
-
-### 先取得 5 分鐘 token
-
-PowerShell:
+## Quick Start
 
 ```powershell
-$body = @{ stream_path = "/dev/liveB03.flv" } | ConvertTo-Json
-$r = Invoke-RestMethod -Method Post `
-  -Uri "http://127.0.0.1:8088/api/v1/tokens" `
-  -ContentType "application/json" `
-  -Body $body
-$r
-$r.stream_url
-```
-
-你會拿到類似：
-
-```text
-http://127.0.0.1:8088/dev/liveB03.flv?token=eyJ...<signature>
-```
-
-接著：
-
-```powershell
-Invoke-WebRequest -Uri $r.stream_url -OutFile test.flv
-```
-
-直接不帶 token：
-
-```powershell
-Invoke-WebRequest "http://127.0.0.1:8088/dev/liveB03.flv"
-```
-
-應回 `401 token required`。
-
-## 2. Run automated tests
-
-```powershell
-py -3 -m venv .venv
+python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements-dev.txt
-pytest -q
+python -m pip install -r requirements.txt
+copy .env.example .env
+python -m uvicorn app.main:app --host 127.0.0.1 --port 18088
 ```
 
-測試包含：
+Health check:
 
-1. token 5 分鐘 expiry。
-2. 無 token 禁止拉流。
-3. 正確 token 可以取得 upstream FLV bytes。
-4. token 綁定 path，B03 token 不能拿去拉 B04。
-5. token 被竄改會拒絕。
-6. Token API 可選擇加 `X-Token-API-Key` 保護。
+```powershell
+curl http://127.0.0.1:18088/health
+```
 
-## 3. Move to intranet
+## Configuration
 
-修改 `.env`：
+`.env` example:
 
 ```env
-PUBLIC_BASE_URL=https://your-public-host.example.com
+PUBLIC_BASE_URL=http://127.0.0.1:18088
 UPSTREAM_BASE_URL=https://10.2.192.8:8088
-TOKEN_SECRET=<至少 32 bytes 的強隨機 secret>
+TOKEN_SECRET=<long-random-secret>
 TOKEN_TTL_SECONDS=300
-TOKEN_ISSUER_API_KEY=<建議設定，避免任何人都能無限制索取 token>
+TOKEN_ISSUER_API_KEY=
 UPSTREAM_VERIFY_TLS=false
 ```
 
-若內網源站使用正式憑證，`UPSTREAM_VERIFY_TLS=true`。只有 self-signed/internal CA 且尚未匯入 trust store 時才暫時設 `false`。
+| Setting | Description |
+|---|---|
+| `PUBLIC_BASE_URL` | Gateway URL returned to clients. |
+| `UPSTREAM_BASE_URL` | Internal FLV source URL. |
+| `TOKEN_SECRET` | HMAC signing secret. Use a strong random value. |
+| `TOKEN_TTL_SECONDS` | Token TTL in seconds. Default POC value: 300. |
+| `TOKEN_ISSUER_API_KEY` | Optional API key required by token endpoint when non-empty. |
+| `UPSTREAM_VERIFY_TLS` | Whether to verify upstream TLS certificate. |
 
-### Production token request
-
-若設定 `TOKEN_ISSUER_API_KEY`：
+## Issue Token
 
 ```powershell
-$headers = @{ "X-Token-API-Key" = "<your issuer key>" }
-$body = @{ stream_path = "/dev/liveB03.flv" } | ConvertTo-Json
-Invoke-RestMethod -Method Post `
-  -Uri "https://your-public-host.example.com/api/v1/tokens" `
-  -Headers $headers -ContentType "application/json" -Body $body
-```
+$streamPath = "/gishtest/gish.flv"
+$body = @{ stream_path = $streamPath } | ConvertTo-Json
 
-## 4. HTTPS
+$r = Invoke-RestMethod `
+    -Method Post `
+    -Uri "http://127.0.0.1:18088/api/v1/tokens" `
+    -ContentType "application/json" `
+    -Body $body
 
-程式本身可置於 Nginx / IIS / ingress 後方做 TLS termination，這通常比讓 Uvicorn 直接管理正式憑證更合適。最終對外 URL 就可以符合需求中的 `https://xxxx/...flv?token=...`。
-
-## Security notes
-
-- HMAC-SHA256，token 無 server-side session，適合多 worker / 多 instance。
-- token 綁定 exact stream path，不能跨頻道重用。
-- HMAC 驗證使用 constant-time compare。
-- `.env` 不進 Git。
-- Token API 建議於正式環境設定 `TOKEN_ISSUER_API_KEY`，否則「任何可以連到 API 的人」都可以自行取得 5 分鐘 token。
-- 若需求之後要求「同一 token 只能使用一次」或「300 秒到點立即切斷既有 stream」，需要增加 server-side state；目前依常見串流 token 語意為 **300 秒內允許建立連線**。
-
-## API
-
-### `POST /api/v1/tokens`
-
-Request:
-
-```json
-{
-  "stream_path": "/dev/liveB03.flv"
-}
+$r | Format-List token, expires_in, expires_at, stream_url
 ```
 
 Response:
 
 ```json
 {
-  "token": "...",
+  "token": "<TOKEN>",
   "expires_in": 300,
-  "expires_at": 1787280000,
-  "stream_url": "https://your-public-host.example.com/dev/liveB03.flv?token=..."
+  "expires_at": 1788151441,
+  "stream_url": "http://127.0.0.1:18088/gishtest/gish.flv?token=<TOKEN>"
 }
 ```
 
-### `GET /dev/liveB03.flv?token=...`
+## Play with VLC
 
-驗證通過後，以 streaming/chunked 方式 reverse proxy 原始 FLV；不先下載整個影片到記憶體。
+Copy `stream_url` and open it in VLC:
+
+```text
+Media -> Open Network Stream -> paste stream_url -> Play
+```
+
+## Token Behavior
+
+- Each `POST /api/v1/tokens` issues a new token.
+- Tokens may look similar at the beginning because the payload contains the same path and similar expiry time.
+- A newly issued token does not revoke previously issued tokens.
+- The same token can be reused within its TTL.
+- Token TTL is checked when establishing a connection. An already established FLV stream is not forcibly terminated at the TTL boundary.
+- After expiry, reusing the same URL to establish a new connection should return 403.
+
+This is a stateless POC design. One-time token, revoke, replay protection, allowlist, and audit log are production hardening items.
+
+## Error Behavior
+
+| Condition | HTTP Status |
+|---|---:|
+| Missing token | 401 |
+| Expired token | 403 |
+| Tampered token | 403 |
+| Path mismatch | 403 |
+| Valid token | Streaming response |
+
+## Tests
+
+```powershell
+python -m pytest -q
+```
+
+Current POC coverage includes:
+
+1. valid token verification
+2. expiry rejection
+3. path binding rejection
+4. tamper rejection
+5. no-token stream request -> 401
+6. valid token streams upstream response
+7. token endpoint returns stream URL and TTL
+8. optional API key check for token endpoint
+
+## Production Hardening
+
+Recommended before production:
+
+- require `TOKEN_ISSUER_API_KEY` or integrate with internal identity service
+- stream path allowlist
+- rate limit token endpoint
+- one-time token / replay protection with Redis or DB
+- token revoke support
+- audit log for token issue, reject reason, upstream failures
+- TLS certificate validation in production
