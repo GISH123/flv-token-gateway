@@ -61,11 +61,13 @@ os.chdir(BASE_DIR)
 def run_server():
     # Import after chdir so external .env beside EXE is used.
     from app.main import app
+    from app.settings import get_settings
     import uvicorn
 
-    host = os.getenv("GATEWAY_HOST", "127.0.0.1")
-    port = int(os.getenv("GATEWAY_PORT", "18088"))
-    log_level = os.getenv("GATEWAY_LOG_LEVEL", "info")
+    cfg = get_settings()
+    host = cfg.gateway_host
+    port = cfg.gateway_port
+    log_level = cfg.gateway_log_level
 
     print("=" * 68)
     print("FLV Token Gateway")
@@ -82,14 +84,16 @@ def run_server():
 def run_test_ui():
     import tkinter as tk
     from tkinter import ttk, messagebox
+    from app.settings import get_settings
 
+    cfg = get_settings()
     root = tk.Tk()
     root.title("FLV Token Gateway - Test UI")
     root.geometry("920x650")
     root.minsize(820, 560)
 
-    base_url = tk.StringVar(value="http://127.0.0.1:18088")
-    stream_path = tk.StringVar(value="/gishtest/gish.flv")
+    base_url = tk.StringVar(value=cfg.public_base_url)
+    stream_path = tk.StringVar(value=cfg.test_stream_path)
     api_key = tk.StringVar(value="")
     status_text = tk.StringVar(value="Ready")
     expires_text = tk.StringVar(value="-")
@@ -298,12 +302,17 @@ elif example_env.exists():
 else:
     generated_env.write_text(
         "\n".join([
+            "GATEWAY_HOST=0.0.0.0",
+            "GATEWAY_PORT=18088",
+            "GATEWAY_LOG_LEVEL=info",
             "PUBLIC_BASE_URL=http://127.0.0.1:18088",
             "UPSTREAM_BASE_URL=http://127.0.0.1:9090",
             "TOKEN_SECRET=replace-me-with-at-least-32-random-characters",
             "TOKEN_TTL_SECONDS=300",
             "TOKEN_ISSUER_API_KEY=",
             "UPSTREAM_VERIFY_TLS=true",
+            "CORS_ALLOW_ORIGINS=*",
+            "TEST_STREAM_PATH=/gishtest/gish.flv",
             "",
         ]),
         encoding="utf-8",

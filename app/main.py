@@ -3,6 +3,7 @@ from urllib.parse import urlencode
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Query, Request, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -40,8 +41,17 @@ def create_app(settings: Settings | None = None, upstream_client: httpx.AsyncCli
                 await app.state.upstream_client.aclose()
 
     app = FastAPI(title="FLV Token Gateway", version="1.0.0", lifespan=lifespan)
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cfg.cors_origins,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["*"],
+        expose_headers=["Content-Length", "Content-Range", "Accept-Ranges"],
+    )
+
     app.state.settings = cfg
-    # TestClient/ASGI tests may access routes without lifespan; keep injected client available.
     if upstream_client is not None:
         app.state.upstream_client = upstream_client
 
@@ -92,15 +102,16 @@ def create_app(settings: Settings | None = None, upstream_client: httpx.AsyncCli
         if passthrough_params:
             upstream_url += "?" + urlencode(passthrough_params)
 
+        upstream_headers = {
+            "Accept": request.headers.get("accept", "*/*"),
+            "User-Agent": request.headers.get("user-agent", "flv-token-gateway/1.0"),
+        }
+        if request.headers.get("range"):
+            upstream_headers["Range"] = request.headers["range"]
+
         client: httpx.AsyncClient = request.app.state.upstream_client
-        upstream_request = client.build_request(
-            "GET",
-            upstream_url,
-            headers={
-                "Accept": request.headers.get("accept", "*/*"),
-                "User-Agent": request.headers.get("user-agent", "flv-token-gateway/1.0"),
-            },
-        )
+        upstream_request = client.build_request("GET", upstream_url, headers=upstream_headers)
+
         try:
             upstream = await client.send(upstream_request, stream=True)
         except httpx.HTTPError as exc:

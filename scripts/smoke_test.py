@@ -20,7 +20,7 @@ def request_json(url: str, method: str = "GET", body: dict | None = None) -> tup
 
 
 def main() -> int:
-    base = sys.argv[1].rstrip("/") if len(sys.argv) > 1 else "http://127.0.0.1:8088"
+    base = sys.argv[1].rstrip("/") if len(sys.argv) > 1 else "http://127.0.0.1:18088"
 
     status, health = request_json(base + "/health")
     assert status == 200 and health["status"] == "ok", (status, health)
