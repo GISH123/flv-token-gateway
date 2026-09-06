@@ -6,22 +6,29 @@ from app.main import create_app
 from app.settings import Settings
 
 
-MOCK_FLV = b"FLV\x01\x05\x00\x00\x00\x09\x00\x00\x00\x00" + b"integration-test-payload"
+MOCK_FLV = (
+    b"FLV\x01\x05\x00\x00\x00\x09"
+    b"\x00\x00\x00\x00"
+    b"integration-test-payload"
+)
 
 
 def make_settings(**overrides):
     data = dict(
         gateway_host="0.0.0.0",
-        gateway_port=18088,
+        gateway_http_port=18080,
+        gateway_https_port=18088,
         gateway_log_level="info",
-        public_base_url="http://gateway.test",
+        public_base_url="https://gateway.test:18088",
         upstream_base_url="http://upstream.test",
         token_secret="0123456789abcdef0123456789abcdef",
-        token_ttl_seconds=300,
+        token_ttl_seconds=600,
         token_issuer_api_key="",
         upstream_verify_tls=True,
         cors_allow_origins="*",
         test_stream_path="/gishtest/gish.flv",
+        tls_cert_file="certs/gateway.crt",
+        tls_key_file="certs/gateway.key",
     )
     data.update(overrides)
     return Settings(**data)
@@ -34,75 +41,273 @@ class MockAsyncStream(httpx.AsyncByteStream):
 
 def upstream_handler(request: httpx.Request) -> httpx.Response:
     if request.url.path == "/dev/liveB03.flv":
-        headers = {"content-type": "video/x-flv", "accept-ranges": "bytes"}
+        headers = {
+            "content-type": "video/x-flv",
+            "accept-ranges": "bytes",
+        }
+
         if request.headers.get("range"):
             headers["content-range"] = "bytes 0-2/36"
-            return httpx.Response(206, stream=MockAsyncStream(), headers=headers)
-        return httpx.Response(200, stream=MockAsyncStream(), headers=headers)
-    return httpx.Response(404, stream=MockAsyncStream())
+            return httpx.Response(
+                206,
+                stream=MockAsyncStream(),
+                headers=headers,
+            )
+
+        return httpx.Response(
+            200,
+            stream=MockAsyncStream(),
+            headers=headers,
+        )
+
+    return httpx.Response(
+        404,
+        stream=MockAsyncStream(),
+    )
 
 
 @pytest.mark.asyncio
 async def test_no_token_is_denied():
-    upstream = httpx.AsyncClient(transport=httpx.MockTransport(upstream_handler))
+    upstream = httpx.AsyncClient(
+        transport=httpx.MockTransport(upstream_handler)
+    )
     app = create_app(make_settings(), upstream_client=upstream)
-    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://gateway.test") as client:
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="https://gateway.test:18088",
+    ) as client:
         response = await client.get("/dev/liveB03.flv")
+
     await upstream.aclose()
+
     assert response.status_code == 401
     assert response.json()["detail"] == "token required"
 
 
 @pytest.mark.asyncio
-async def test_get_token_then_stream_succeeds():
-    upstream = httpx.AsyncClient(transport=httpx.MockTransport(upstream_handler))
+async def test_post_token_then_stream_succeeds():
+    upstream = httpx.AsyncClient(
+        transport=httpx.MockTransport(upstream_handler)
+    )
     app = create_app(make_settings(), upstream_client=upstream)
-    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://gateway.test") as client:
-        token_response = await client.post("/api/v1/tokens", json={"stream_path": "/dev/liveB03.flv"})
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="https://gateway.test:18088",
+    ) as client:
+        token_response = await client.post(
+            "/api/v1/tokens",
+            json={"stream_path": "/dev/liveB03.flv"},
+        )
+
         assert token_response.status_code == 200
+
         data = token_response.json()
-        assert data["expires_in"] == 300
-        assert data["stream_url"].startswith("http://gateway.test/dev/liveB03.flv?token=")
+
+        assert data["expires_in"] == 600
+        assert data["stream_url"].startswith(
+            "https://gateway.test:18088/dev/liveB03.flv?token="
+        )
 
         stream_response = await client.get(data["stream_url"])
+
         assert stream_response.status_code == 200
-        assert stream_response.headers["content-type"].startswith("video/x-flv")
+        assert stream_response.headers["content-type"].startswith(
+            "video/x-flv"
+        )
         assert stream_response.content == MOCK_FLV
+
     await upstream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_get_token_then_stream_succeeds():
+    upstream = httpx.AsyncClient(
+        transport=httpx.MockTransport(upstream_handler)
+    )
+    app = create_app(make_settings(), upstream_client=upstream)
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="https://gateway.test:18088",
+    ) as client:
+        token_response = await client.get(
+            "/api/v1/tokens",
+            params={"stream_path": "/dev/liveB03.flv"},
+        )
+
+        assert token_response.status_code == 200
+
+        data = token_response.json()
+
+        assert data["expires_in"] == 600
+        assert data["stream_url"].startswith(
+            "https://gateway.test:18088/dev/liveB03.flv?token="
+        )
+
+        stream_response = await client.get(data["stream_url"])
+
+        assert stream_response.status_code == 200
+        assert stream_response.headers["content-type"].startswith(
+            "video/x-flv"
+        )
+        assert stream_response.content == MOCK_FLV
+
+    await upstream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_get_and_post_token_apis_have_same_response_shape():
+    upstream = httpx.AsyncClient(
+        transport=httpx.MockTransport(upstream_handler)
+    )
+    app = create_app(make_settings(), upstream_client=upstream)
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="https://gateway.test:18088",
+    ) as client:
+        get_response = await client.get(
+            "/api/v1/tokens",
+            params={"stream_path": "/dev/liveB03.flv"},
+        )
+
+        post_response = await client.post(
+            "/api/v1/tokens",
+            json={"stream_path": "/dev/liveB03.flv"},
+        )
+
+    await upstream.aclose()
+
+    assert get_response.status_code == 200
+    assert post_response.status_code == 200
+
+    get_data = get_response.json()
+    post_data = post_response.json()
+
+    expected_keys = {
+        "token",
+        "expires_in",
+        "expires_at",
+        "stream_url",
+    }
+
+    assert set(get_data) == expected_keys
+    assert set(post_data) == expected_keys
+    assert get_data["expires_in"] == 600
+    assert post_data["expires_in"] == 600
+    assert get_data["stream_url"].startswith(
+        "https://gateway.test:18088/"
+    )
+    assert post_data["stream_url"].startswith(
+        "https://gateway.test:18088/"
+    )
 
 
 @pytest.mark.asyncio
 async def test_token_for_one_path_cannot_open_another_path():
-    upstream = httpx.AsyncClient(transport=httpx.MockTransport(upstream_handler))
+    upstream = httpx.AsyncClient(
+        transport=httpx.MockTransport(upstream_handler)
+    )
     app = create_app(make_settings(), upstream_client=upstream)
-    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://gateway.test") as client:
-        data = (await client.post("/api/v1/tokens", json={"stream_path": "/dev/liveB03.flv"})).json()
-        response = await client.get("/dev/liveB04.flv", params={"token": data["token"]})
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="https://gateway.test:18088",
+    ) as client:
+        data = (
+            await client.post(
+                "/api/v1/tokens",
+                json={"stream_path": "/dev/liveB03.flv"},
+            )
+        ).json()
+
+        response = await client.get(
+            "/dev/liveB04.flv",
+            params={"token": data["token"]},
+        )
+
     await upstream.aclose()
+
     assert response.status_code == 403
 
 
 @pytest.mark.asyncio
-async def test_token_issuer_can_be_protected_by_api_key():
-    upstream = httpx.AsyncClient(transport=httpx.MockTransport(upstream_handler))
-    app = create_app(make_settings(token_issuer_api_key="issuer-secret"), upstream_client=upstream)
-    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://gateway.test") as client:
-        denied = await client.post("/api/v1/tokens", json={"stream_path": "/dev/liveB03.flv"})
+async def test_post_token_issuer_can_be_protected_by_api_key():
+    upstream = httpx.AsyncClient(
+        transport=httpx.MockTransport(upstream_handler)
+    )
+
+    app = create_app(
+        make_settings(token_issuer_api_key="issuer-secret"),
+        upstream_client=upstream,
+    )
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="https://gateway.test:18088",
+    ) as client:
+        denied = await client.post(
+            "/api/v1/tokens",
+            json={"stream_path": "/dev/liveB03.flv"},
+        )
+
         allowed = await client.post(
             "/api/v1/tokens",
             json={"stream_path": "/dev/liveB03.flv"},
             headers={"X-Token-API-Key": "issuer-secret"},
         )
+
     await upstream.aclose()
+
+    assert denied.status_code == 401
+    assert allowed.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_get_token_api_respects_issuer_api_key():
+    upstream = httpx.AsyncClient(
+        transport=httpx.MockTransport(upstream_handler)
+    )
+
+    app = create_app(
+        make_settings(token_issuer_api_key="issuer-secret"),
+        upstream_client=upstream,
+    )
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="https://gateway.test:18088",
+    ) as client:
+        denied = await client.get(
+            "/api/v1/tokens",
+            params={"stream_path": "/dev/liveB03.flv"},
+        )
+
+        allowed = await client.get(
+            "/api/v1/tokens",
+            params={"stream_path": "/dev/liveB03.flv"},
+            headers={"X-Token-API-Key": "issuer-secret"},
+        )
+
+    await upstream.aclose()
+
     assert denied.status_code == 401
     assert allowed.status_code == 200
 
 
 @pytest.mark.asyncio
 async def test_cors_allows_browser_player_by_default():
-    upstream = httpx.AsyncClient(transport=httpx.MockTransport(upstream_handler))
+    upstream = httpx.AsyncClient(
+        transport=httpx.MockTransport(upstream_handler)
+    )
     app = create_app(make_settings(), upstream_client=upstream)
-    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://gateway.test") as client:
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="https://gateway.test:18088",
+    ) as client:
         response = await client.options(
             "/dev/liveB03.flv",
             headers={
@@ -110,19 +315,33 @@ async def test_cors_allows_browser_player_by_default():
                 "Access-Control-Request-Method": "GET",
             },
         )
+
     await upstream.aclose()
+
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "*"
 
 
 @pytest.mark.asyncio
 async def test_cors_can_be_restricted_to_configured_origin():
-    upstream = httpx.AsyncClient(transport=httpx.MockTransport(upstream_handler))
+    upstream = httpx.AsyncClient(
+        transport=httpx.MockTransport(upstream_handler)
+    )
+
     app = create_app(
-        make_settings(cors_allow_origins="http://10.2.192.8:8080,http://player.test"),
+        make_settings(
+            cors_allow_origins=(
+                "http://10.2.192.8:8080,"
+                "https://player.test"
+            )
+        ),
         upstream_client=upstream,
     )
-    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://gateway.test") as client:
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="https://gateway.test:18088",
+    ) as client:
         allowed = await client.options(
             "/dev/liveB03.flv",
             headers={
@@ -130,15 +349,21 @@ async def test_cors_can_be_restricted_to_configured_origin():
                 "Access-Control-Request-Method": "GET",
             },
         )
+
         denied = await client.options(
             "/dev/liveB03.flv",
             headers={
-                "Origin": "http://not-allowed.test",
+                "Origin": "https://not-allowed.test",
                 "Access-Control-Request-Method": "GET",
             },
         )
+
     await upstream.aclose()
-    assert allowed.headers["access-control-allow-origin"] == "http://10.2.192.8:8080"
+
+    assert (
+        allowed.headers["access-control-allow-origin"]
+        == "http://10.2.192.8:8080"
+    )
     assert "access-control-allow-origin" not in denied.headers
 
 
@@ -146,16 +371,35 @@ async def test_cors_can_be_restricted_to_configured_origin():
 async def test_range_header_is_forwarded_for_browser_players():
     seen = {}
 
-    def range_upstream_handler(request: httpx.Request) -> httpx.Response:
+    def range_upstream_handler(
+        request: httpx.Request,
+    ) -> httpx.Response:
         seen["range"] = request.headers.get("range")
         return upstream_handler(request)
 
-    upstream = httpx.AsyncClient(transport=httpx.MockTransport(range_upstream_handler))
+    upstream = httpx.AsyncClient(
+        transport=httpx.MockTransport(range_upstream_handler)
+    )
     app = create_app(make_settings(), upstream_client=upstream)
-    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://gateway.test") as client:
-        data = (await client.post("/api/v1/tokens", json={"stream_path": "/dev/liveB03.flv"})).json()
-        response = await client.get(data["stream_url"], headers={"Range": "bytes=0-"})
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="https://gateway.test:18088",
+    ) as client:
+        data = (
+            await client.post(
+                "/api/v1/tokens",
+                json={"stream_path": "/dev/liveB03.flv"},
+            )
+        ).json()
+
+        response = await client.get(
+            data["stream_url"],
+            headers={"Range": "bytes=0-"},
+        )
+
     await upstream.aclose()
+
     assert seen["range"] == "bytes=0-"
     assert response.status_code == 206
     assert response.headers["content-range"] == "bytes 0-2/36"
@@ -164,17 +408,21 @@ async def test_range_header_is_forwarded_for_browser_players():
 
 @pytest.mark.asyncio
 async def test_token_response_does_not_expose_upstream_origin():
-    upstream = httpx.AsyncClient(transport=httpx.MockTransport(upstream_handler))
+    upstream = httpx.AsyncClient(
+        transport=httpx.MockTransport(upstream_handler)
+    )
+
     app = create_app(
         make_settings(
-            public_base_url="http://gateway.test",
+            public_base_url="https://gateway.test:18088",
             upstream_base_url="https://10.2.192.8:8088",
         ),
         upstream_client=upstream,
     )
+
     async with httpx.AsyncClient(
         transport=ASGITransport(app=app),
-        base_url="http://gateway.test",
+        base_url="https://gateway.test:18088",
     ) as client:
         response = await client.post(
             "/api/v1/tokens",
@@ -182,24 +430,41 @@ async def test_token_response_does_not_expose_upstream_origin():
         )
 
     await upstream.aclose()
+
     assert response.status_code == 200
+
     data = response.json()
-    assert set(data) == {"token", "expires_in", "expires_at", "stream_url"}
-    assert data["stream_url"].startswith("http://gateway.test/")
+
+    assert set(data) == {
+        "token",
+        "expires_in",
+        "expires_at",
+        "stream_url",
+    }
+
+    assert data["stream_url"].startswith(
+        "https://gateway.test:18088/"
+    )
     assert "10.2.192.8" not in response.text
     assert "https://10.2.192.8:8088" not in response.text
 
 
 @pytest.mark.asyncio
 async def test_upstream_rejection_does_not_expose_upstream_origin():
-    upstream = httpx.AsyncClient(transport=httpx.MockTransport(upstream_handler))
+    upstream = httpx.AsyncClient(
+        transport=httpx.MockTransport(upstream_handler)
+    )
+
     app = create_app(
-        make_settings(upstream_base_url="https://10.2.192.8:8088"),
+        make_settings(
+            upstream_base_url="https://10.2.192.8:8088"
+        ),
         upstream_client=upstream,
     )
+
     async with httpx.AsyncClient(
         transport=ASGITransport(app=app),
-        base_url="http://gateway.test",
+        base_url="https://gateway.test:18088",
     ) as client:
         token_data = (
             await client.post(
@@ -207,10 +472,59 @@ async def test_upstream_rejection_does_not_expose_upstream_origin():
                 json={"stream_path": "/dev/missing.flv"},
             )
         ).json()
+
         response = await client.get(token_data["stream_url"])
 
     await upstream.aclose()
+
     assert response.status_code == 404
-    assert response.json() == {"detail": "upstream rejected stream"}
+    assert response.json() == {
+        "detail": "upstream rejected stream"
+    }
     assert "10.2.192.8" not in response.text
     assert "8088" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_player_page_is_served():
+    upstream = httpx.AsyncClient(
+        transport=httpx.MockTransport(upstream_handler)
+    )
+    app = create_app(make_settings(), upstream_client=upstream)
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="https://gateway.test:18088",
+    ) as client:
+        response = await client.get("/player")
+
+    await upstream.aclose()
+
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+
+    html = response.text
+
+    assert "FLV Token Gateway Player" in html
+    assert "/assets/flv.min.js" in html
+    assert "/api/v1/tokens" in html
+    assert "stream_path" in html
+
+
+@pytest.mark.asyncio
+async def test_player_route_does_not_require_stream_token():
+    upstream = httpx.AsyncClient(
+        transport=httpx.MockTransport(upstream_handler)
+    )
+    app = create_app(make_settings(), upstream_client=upstream)
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="https://gateway.test:18088",
+    ) as client:
+        response = await client.get("/player")
+
+    await upstream.aclose()
+
+    assert response.status_code != 401
+    assert response.status_code != 403

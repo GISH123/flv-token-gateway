@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FLV Token Gateway Player</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: Segoe UI, Arial, sans-serif;
+    }
+    body {
+      margin: 0;
+      background: #111827;
+      color: #f3f4f6;
+    }
+    .page {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 28px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 28px;
+    }
+    .subtitle {
+      margin: 0 0 24px;
+      color: #9ca3af;
+    }
+    .panel {
+      background: #1f2937;
+      border: 1px solid #374151;
+      border-radius: 12px;
+      padding: 18px;
+      margin-bottom: 18px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 170px 1fr;
+      gap: 12px 14px;
+      align-items: center;
+    }
+    label {
+      color: #d1d5db;
+      font-weight: 600;
+    }
+    input {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid #4b5563;
+      border-radius: 7px;
+      padding: 10px 12px;
+      background: #111827;
+      color: #f9fafb;
+      font: inherit;
+    }
+    .buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 16px;
+    }
+    button {
+      border: 0;
+      border-radius: 7px;
+      padding: 10px 18px;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .primary {
+      background: #2563eb;
+      color: white;
+    }
+    .secondary {
+      background: #4b5563;
+      color: white;
+    }
+    .danger {
+      background: #b91c1c;
+      color: white;
+    }
+    video {
+      display: block;
+      width: 100%;
+      min-height: 360px;
+      background: black;
+      border-radius: 8px;
+    }
+    #status {
+      margin-top: 12px;
+      padding: 10px 12px;
+      border-radius: 7px;
+      background: #111827;
+      color: #d1d5db;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .small {
+      margin-top: 8px;
+      color: #9ca3af;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1>FLV Token Gateway Player</h1>
+    <p class="subtitle">
+      Same-origin HTTPS player using GET token API and local flv.js.
+    </p>
+
+    <div class="panel">
+      <div class="grid">
+        <label for="streamPath">Stream Path</label>
+        <input id="streamPath" value="/gishtest/gish.flv">
+
+        <label for="apiKey">Token API Key</label>
+        <input
+          id="apiKey"
+          type="password"
+          placeholder="Optional unless TOKEN_ISSUER_API_KEY is configured"
+        >
+      </div>
+
+      <div class="buttons">
+        <button class="primary" id="playButton">Get Token & Play</button>
+        <button class="secondary" id="tokenButton">Get Token Only</button>
+        <button class="danger" id="stopButton">Stop</button>
+      </div>
+
+      <div id="status">Ready.</div>
+      <div class="small">
+        Token API: GET /api/v1/tokens?stream_path=...
+      </div>
+    </div>
+
+    <div class="panel">
+      <video id="video" controls autoplay muted></video>
+    </div>
+  </div>
+
+  <script src="/assets/flv.min.js"></script>
+  <script>
+    let player = null;
+
+    const streamPathInput = document.getElementById("streamPath");
+    const apiKeyInput = document.getElementById("apiKey");
+    const statusBox = document.getElementById("status");
+    const video = document.getElementById("video");
+
+    function setStatus(message) {
+      statusBox.textContent = message;
+    }
+
+    function stopPlayer() {
+      if (player) {
+        try {
+          player.pause();
+          player.unload();
+          player.detachMediaElement();
+          player.destroy();
+        } catch (error) {
+          console.warn("Player cleanup error:", error);
+        }
+        player = null;
+      }
+
+      video.removeAttribute("src");
+      video.load();
+      setStatus("Stopped.");
+    }
+
+    async function issueToken() {
+      const streamPath = streamPathInput.value.trim();
+
+      if (!streamPath) {
+        throw new Error("Stream path is required.");
+      }
+
+      const params = new URLSearchParams({
+        stream_path: streamPath,
+      });
+
+      const headers = {};
+      const apiKey = apiKeyInput.value.trim();
+
+      if (apiKey) {
+        headers["X-Token-API-Key"] = apiKey;
+      }
+
+      const response = await fetch(
+        `/api/v1/tokens?${params.toString()}`,
+        {
+          method: "GET",
+          headers,
+          cache: "no-store",
+        }
+      );
+
+      let data = null;
+
+      try {
+        data = await response.json();
+      } catch (error) {
+        throw new Error(
+          `Token API returned HTTP ${response.status} with invalid JSON.`
+        );
+      }
+
+      if (!response.ok) {
+        throw new Error(
+          `Token API HTTP ${response.status}: ${data.detail || "request failed"}`
+        );
+      }
+
+      setStatus(
+        [
+          "Token issued.",
+          `Expires in: ${data.expires_in} seconds`,
+          `Expires at: ${data.expires_at}`,
+          `Stream URL: ${data.stream_url}`,
+        ].join("\n")
+      );
+
+      return data;
+    }
+
+    async function playStream() {
+      try {
+        stopPlayer();
+        setStatus("Issuing token...");
+
+        const data = await issueToken();
+
+        if (!window.flvjs) {
+          throw new Error(
+            "flv.js is not loaded. Check /assets/flv.min.js."
+          );
+        }
+
+        if (!flvjs.isSupported()) {
+          throw new Error(
+            "This browser does not support Media Source Extensions required by flv.js."
+          );
+        }
+
+        player = flvjs.createPlayer(
+          {
+            type: "flv",
+            isLive: true,
+            url: data.stream_url,
+          },
+          {
+            enableWorker: false,
+            enableStashBuffer: false,
+            stashInitialSize: 128,
+          }
+        );
+
+        player.attachMediaElement(video);
+        player.load();
+
+        try {
+          await player.play();
+        } catch (error) {
+          console.warn("Autoplay was blocked or delayed:", error);
+        }
+
+        setStatus(
+          [
+            "Playing.",
+            `Expires in: ${data.expires_in} seconds`,
+            `Stream URL: ${data.stream_url}`,
+          ].join("\n")
+        );
+      } catch (error) {
+        console.error(error);
+        setStatus(`ERROR: ${error.message || error}`);
+      }
+    }
+
+    async function getTokenOnly() {
+      try {
+        setStatus("Issuing token...");
+        await issueToken();
+      } catch (error) {
+        console.error(error);
+        setStatus(`ERROR: ${error.message || error}`);
+      }
+    }
+
+    document
+      .getElementById("playButton")
+      .addEventListener("click", playStream);
+
+    document
+      .getElementById("tokenButton")
+      .addEventListener("click", getTokenOnly);
+
+    document
+      .getElementById("stopButton")
+      .addEventListener("click", stopPlayer);
+
+    window.addEventListener("beforeunload", () => {
+      if (player) {
+        try {
+          player.destroy();
+        } catch (error) {
+          console.warn(error);
+        }
+      }
+    });
+  </script>
+</body>
+</html>

@@ -5,28 +5,56 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
+    # Gateway listeners
     gateway_host: str = Field(default="0.0.0.0", min_length=1)
-    gateway_port: int = Field(default=18088, ge=1, le=65535)
+    gateway_http_port: int = Field(default=18080, ge=1, le=65535)
+    gateway_https_port: int = Field(default=18088, ge=1, le=65535)
     gateway_log_level: str = "info"
 
-    public_base_url: str = "http://127.0.0.1:18088"
+    # Public client-visible URL
+    public_base_url: str = "https://127.0.0.1:18088"
+
+    # Internal/source FLV origin
     upstream_base_url: str = "http://127.0.0.1:9090"
 
-    token_secret: str = Field(default="dev-only-secret-change-me-please", min_length=32)
-    token_ttl_seconds: int = Field(default=300, ge=1, le=3600)
+    # Token
+    token_secret: str = Field(
+        default="dev-only-secret-change-me-please",
+        min_length=32,
+    )
+    token_ttl_seconds: int = Field(default=600, ge=1, le=3600)
     token_issuer_api_key: str = ""
+
+    # Upstream TLS
     upstream_verify_tls: bool = True
 
+    # Browser
     cors_allow_origins: str = "*"
+
+    # Test/default stream
     test_stream_path: str = "/gishtest/gish.flv"
+
+    # Gateway HTTPS certificate
+    tls_cert_file: str = "certs/gateway.crt"
+    tls_key_file: str = "certs/gateway.key"
 
     @property
     def cors_origins(self) -> list[str]:
-        values = [value.strip() for value in self.cors_allow_origins.split(",") if value.strip()]
+        values = [
+            value.strip()
+            for value in self.cors_allow_origins.split(",")
+            if value.strip()
+        ]
+
         if not values or "*" in values:
             return ["*"]
+
         return values
 
 
