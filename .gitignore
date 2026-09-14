@@ -33,3 +33,5 @@ requirements_before_packaging.txt
 
 # Git transfer bundles
 *.bundle
+
+standalone_player/player_config.json

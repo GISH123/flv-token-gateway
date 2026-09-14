@@ -1,0 +1,8 @@
+{
+  "local_host": "127.0.0.1",
+  "local_port": 18100,
+  "gateway_base_url": "https://GATEWAY_HOST:18088",
+  "stream_path": "/example/live.flv",
+  "token_api_key": "",
+  "open_browser": true
+}
