@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     gateway_host: str = Field(default="0.0.0.0", min_length=1)
     gateway_http_port: int = Field(default=18080, ge=1, le=65535)
     gateway_https_port: int = Field(default=18088, ge=1, le=65535)
+    gateway_enable_http: bool = True
+    gateway_enable_https: bool = True
     gateway_log_level: str = "info"
 
     # Public client-visible URL

@@ -1,7 +1,7 @@
 # FLVTokenGateway_v04_sslfix.spec
 # ------------------------------------------------------------
 # Release build for FLV Token Gateway:
-# - HTTP redirect listener: 18080
+# - HTTP Gateway listener: 18080
 # - HTTPS Gateway listener: 18088
 # - GET + POST token API
 # - Bundled local FLV Player (/player)
@@ -52,7 +52,7 @@ os.chdir(BASE_DIR)
 
 
 def run_server():
-    # app.server owns both HTTP redirect and HTTPS Gateway listeners.
+    # app.server owns both HTTP and HTTPS Gateway listeners.
     from app.server import run_server as _run_server
     _run_server()
 
@@ -97,7 +97,7 @@ def run_test_ui():
 
     ttk.Label(
         outer,
-        text="HTTPS Health → GET Token → GET FLV header → Copy URL.",
+        text="HTTP/HTTPS Health → GET Token → GET FLV header → Copy URL.",
     ).pack(anchor="w", pady=(2, 14))
 
     form = ttk.Frame(outer)
@@ -391,6 +391,8 @@ else:
             "GATEWAY_HOST=0.0.0.0",
             "GATEWAY_HTTP_PORT=18080",
             "GATEWAY_HTTPS_PORT=18088",
+            "GATEWAY_ENABLE_HTTP=true",
+            "GATEWAY_ENABLE_HTTPS=true",
             "GATEWAY_LOG_LEVEL=info",
             "PUBLIC_BASE_URL=https://127.0.0.1:18088",
             "UPSTREAM_BASE_URL=http://127.0.0.1:9090",

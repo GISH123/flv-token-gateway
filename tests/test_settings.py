@@ -16,6 +16,8 @@ def test_gateway_defaults_listen_on_all_interfaces():
     assert settings.gateway_host == "0.0.0.0"
     assert settings.gateway_http_port == 18080
     assert settings.gateway_https_port == 18088
+    assert settings.gateway_enable_http is True
+    assert settings.gateway_enable_https is True
 
 
 def test_default_public_url_is_https():

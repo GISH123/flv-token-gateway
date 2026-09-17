@@ -528,3 +528,34 @@ async def test_player_route_does_not_require_stream_token():
 
     assert response.status_code != 401
     assert response.status_code != 403
+
+@pytest.mark.asyncio
+async def test_http_get_token_then_stream_succeeds_without_redirect():
+    upstream = httpx.AsyncClient(
+        transport=httpx.MockTransport(upstream_handler)
+    )
+    app = create_app(make_settings(), upstream_client=upstream)
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://gateway.test:18080",
+        follow_redirects=False,
+    ) as client:
+        token_response = await client.get(
+            "/api/v1/tokens",
+            params={"stream_path": "/dev/liveB03.flv"},
+        )
+
+        assert token_response.status_code == 200
+        assert "location" not in token_response.headers
+
+        data = token_response.json()
+        assert data["stream_url"].startswith(
+            "http://gateway.test:18080/dev/liveB03.flv?token="
+        )
+
+        stream_response = await client.get(data["stream_url"])
+        assert stream_response.status_code == 200
+        assert stream_response.content == MOCK_FLV
+
+    await upstream.aclose()

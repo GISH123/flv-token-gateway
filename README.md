@@ -81,7 +81,10 @@ The local demo overrides deployment-specific `.env` values only for that process
 
 ```env
 GATEWAY_HOST=0.0.0.0
-GATEWAY_PORT=18088
+GATEWAY_HTTP_PORT=18080
+GATEWAY_HTTPS_PORT=18088
+GATEWAY_ENABLE_HTTP=true
+GATEWAY_ENABLE_HTTPS=true
 GATEWAY_LOG_LEVEL=info
 
 PUBLIC_BASE_URL=http://10.2.192.9:18088
@@ -251,3 +254,27 @@ python -m PyInstaller --clean --noconfirm FLVTokenGateway_v04_sslfix.spec
 - public Gateway TLS
 - proper upstream certificate validation
 - optionally serve the browser player behind the Gateway/reverse proxy
+
+## HTTP / HTTPS Deployment Modes
+
+The Gateway supports HTTP and HTTPS as independent first-class listeners.
+
+```text
+HTTP  :18080 -> Token API / Player / FLV proxy
+HTTPS :18088 -> Token API / Player / FLV proxy
+
+Typical deployment:
+# UAT / HTTP
+GATEWAY_ENABLE_HTTP=true
+GATEWAY_ENABLE_HTTPS=false
+
+# PRD / HTTPS
+GATEWAY_ENABLE_HTTP=false
+GATEWAY_ENABLE_HTTPS=true
+
+When both listeners are enabled, a token requested through HTTP returns an
+HTTP stream URL, while a token requested through HTTPS returns an HTTPS
+stream URL.
+
+For the design rationale and trade-offs, see
+docs/WHY_DUAL_HTTP_HTTPS_ADJUSTMENT.md

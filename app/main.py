@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 import sys
 
 import httpx
@@ -43,6 +43,32 @@ def _resource_file(relative_path: str) -> Path:
     return _resource_root() / relative_path
 
 
+def _public_base_for_request(
+    request: Request,
+    settings: Settings,
+) -> str:
+    """Return a client-visible base URL matching the request protocol."""
+    configured = urlsplit(settings.public_base_url)
+    host = configured.hostname or request.url.hostname
+
+    if not host:
+        return str(request.base_url).rstrip("/")
+
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+
+    scheme = request.url.scheme.lower()
+
+    if scheme == "http":
+        port = settings.gateway_http_port
+    elif scheme == "https":
+        port = settings.gateway_https_port
+    else:
+        return str(request.base_url).rstrip("/")
+
+    return f"{scheme}://{host}:{port}"
+
+
 def create_app(
     settings: Settings | None = None,
     upstream_client: httpx.AsyncClient | None = None,
@@ -61,7 +87,7 @@ def create_app(
 
     app = FastAPI(
         title="FLV Token Gateway",
-        version="1.2.0",
+        version="1.3.0",
         lifespan=lifespan,
     )
 
@@ -83,6 +109,7 @@ def create_app(
         return {"status": "ok"}
 
     def issue_token_response(
+        request: Request,
         stream_path: str,
         x_token_api_key: str | None,
     ) -> TokenResponse:
@@ -104,7 +131,7 @@ def create_app(
                 detail=str(exc),
             ) from exc
 
-        public_base = cfg.public_base_url.rstrip("/")
+        public_base = _public_base_for_request(request, cfg)
         stream_url = f"{public_base}{stream_path}?{urlencode({'token': token})}"
 
         return TokenResponse(
@@ -116,20 +143,24 @@ def create_app(
 
     @app.get("/api/v1/tokens", response_model=TokenResponse)
     async def create_token_get(
+        request: Request,
         stream_path: str = Query(...),
         x_token_api_key: str | None = Header(default=None),
     ) -> TokenResponse:
         return issue_token_response(
+            request=request,
             stream_path=stream_path,
             x_token_api_key=x_token_api_key,
         )
 
     @app.post("/api/v1/tokens", response_model=TokenResponse)
     async def create_token_post(
+        request: Request,
         body: TokenRequest,
         x_token_api_key: str | None = Header(default=None),
     ) -> TokenResponse:
         return issue_token_response(
+            request=request,
             stream_path=body.stream_path,
             x_token_api_key=x_token_api_key,
         )
@@ -211,7 +242,7 @@ def create_app(
             "Accept": request.headers.get("accept", "*/*"),
             "User-Agent": request.headers.get(
                 "user-agent",
-                "flv-token-gateway/1.2",
+                "flv-token-gateway/1.3",
             ),
         }
 
